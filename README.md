@@ -53,6 +53,11 @@ field remains `null`; callers must not invent a balance or IR eligibility.
 Existing player and roster fields are unchanged. The fields are covered by
 the legacy route regression fixture.
 
+`available_players` accepts optional `active_only=true`. Its default stays
+`false` to preserve the existing pool; when true, it excludes players Sleeper's
+cached metadata explicitly marks inactive. This narrows routine waiver scans,
+but an active flag alone does not establish a current role or injury status.
+
 ## Draft metadata summary
 
 `GET /league/{league_id}/drafts/summary` is an additive read-only route that
