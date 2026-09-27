@@ -1,0 +1,15 @@
+{
+  "name": "sleeper-league-worker-staging",
+  "main": "index.js",
+  "account_id": "3c5bb748fe4805621091673dff80f3c7",
+  "compatibility_date": "2026-06-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "kv_namespaces": [
+    {
+      "binding": "SLEEPER_CACHE",
+      "id": "93ff63bce69e4cf982c522b8d6d57712"
+    }
+  ]
+}
+
