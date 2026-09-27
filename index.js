@@ -1397,6 +1397,9 @@ function enrichRosters(rosters, users, playersDb) {
       points_for: sleeperPoints(settings, "fpts"),
       points_against: sleeperPoints(settings, "fpts_against"),
       waiver_position: settings.waiver_position ?? null,
+      waiver_budget_used: Number.isFinite(settings.waiver_budget_used)
+        ? settings.waiver_budget_used
+        : null,
       starters: starters.map((id) => mapPlayer(playersDb, id)).filter(Boolean),
       bench: bench.map((id) => mapPlayer(playersDb, id)).filter(Boolean),
       reserve: reserve.map((id) => mapPlayer(playersDb, id)).filter(Boolean),
@@ -1431,7 +1434,8 @@ async function getEnrichedRosters(env, leagueId) {
   sport: league.sport,
   total_rosters: league.total_rosters,
   roster_positions: league.roster_positions || [],
-  scoring_settings: league.scoring_settings || {}
+  scoring_settings: league.scoring_settings || {},
+  settings: league.settings || {}
 };
 
 const teamsWithMetrics = enrichedTeams.map((team) => {

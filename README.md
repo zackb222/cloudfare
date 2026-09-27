@@ -43,6 +43,16 @@ Worker versions on each staging deploy. To roll back, disable the staging MCP
 feature flag first, then restore the previous staging Worker version if needed.
 Full draft-pick inventory is a later change.
 
+## Roster decision context
+
+The existing `team` and `enriched_rosters` responses now include the league's
+Sleeper `settings` object and each roster's `waiver_budget_used` when Sleeper
+provides it. These additive fields support FAAB, taxi, reserve and roster-rule
+analysis without another route or a second source of truth. A missing budget
+field remains `null`; callers must not invent a balance or IR eligibility.
+Existing player and roster fields are unchanged. The fields are covered by
+the legacy route regression fixture.
+
 ## Draft metadata summary
 
 `GET /league/{league_id}/drafts/summary` is an additive read-only route that
