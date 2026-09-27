@@ -9,10 +9,10 @@ test('Worker routes preserve league, roster, waiver, transaction and matchup beh
     p3: { player_id: 'p3', full_name: 'Fixture Free Agent', position: 'RB', fantasy_positions: ['RB'], active: true, status: 'Active', search_rank: 3 },
   };
   const upstream = new Map<string, any>([
-    ['/v1/league/123', { league_id: '123', name: 'Fixture League', season: '2026', status: 'pre_draft', total_rosters: 2, roster_positions: ['QB', 'WR', 'SUPER_FLEX', 'BN'], scoring_settings: {} }],
+    ['/v1/league/123', { league_id: '123', name: 'Fixture League', season: '2026', status: 'pre_draft', total_rosters: 2, roster_positions: ['QB', 'WR', 'SUPER_FLEX', 'BN'], scoring_settings: {}, settings: { waiver_budget: 100, taxi_slots: 2, reserve_slots: 1 } }],
     ['/v1/league/123/users', [{ user_id: 'a', display_name: 'Manager A' }, { user_id: 'b', metadata: { team_name: 'Team B' } }]],
     ['/v1/league/123/rosters', [
-      { roster_id: 1, owner_id: 'a', players: ['p1'], starters: ['p1', '0'], reserve: [], taxi: [], settings: { fpts: 20, fpts_decimal: 50, waiver_position: 1 } },
+      { roster_id: 1, owner_id: 'a', players: ['p1'], starters: ['p1', '0'], reserve: [], taxi: [], settings: { fpts: 20, fpts_decimal: 50, waiver_position: 1, waiver_budget_used: 18 } },
       { roster_id: 2, owner_id: 'b', players: ['p2'], starters: ['p2'], settings: {} },
     ]],
     ['/v1/league/123/matchups/1', [
@@ -48,9 +48,13 @@ test('Worker routes preserve league, roster, waiver, transaction and matchup beh
   assert.equal((await get('/cache/status')).players_cache_fresh, true);
   assert.equal((await get('/league/123/dashboard')).dashboard.team_count, 2);
   assert.equal((await get('/league/123/preseason_rankings')).mode, 'preseason_rankings');
-  const team = (await get('/league/123/team/1')).team;
+  const teamResponse = await get('/league/123/team/1');
+  const team = teamResponse.team;
   assert.equal(team.starters[0].full_name, 'Fixture Quarterback');
   assert.equal(team.points_for, 20.5);
+  assert.equal(team.waiver_budget_used, 18);
+  assert.equal(teamResponse.league.settings.waiver_budget, 100);
+  assert.equal(teamResponse.league.settings.taxi_slots, 2);
   assert.equal((await get('/league/123/enriched_rosters')).teams.length, 2);
   assert.equal((await get('/league/123/trade_partners/1')).team.roster_id, 1);
   const available = await get('/league/123/available_players?positions=RB&limit=10');
