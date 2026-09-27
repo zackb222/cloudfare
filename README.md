@@ -42,3 +42,14 @@ CI is test-only; no GitHub-to-Cloudflare deployment trigger is configured. Recor
 Worker versions on each staging deploy. To roll back, disable the staging MCP
 feature flag first, then restore the previous staging Worker version if needed.
 Full draft-pick inventory is a later change.
+
+## Draft metadata summary
+
+`GET /league/{league_id}/drafts/summary` is an additive read-only route that
+returns Sleeper's draft IDs, seasons, statuses, types and configured round counts.
+It preserves multiple drafts in the same season and makes no claim that a traded
+pick remains unexercised. It uses only the league and league-drafts Sleeper
+endpoints; no player cache or KV binding is involved. The response is marked
+`draft_metadata_only` with `inventory_complete: false`. Use it to check draft
+status before describing traded-pick records as future assets. Full remaining
+capital still requires draft-pick reconciliation and coverage rules.
