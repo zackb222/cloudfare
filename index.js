@@ -2012,6 +2012,51 @@ async function getTradedDraftPicks(leagueId) {
   };
 }
 
+async function getLeagueDraftSummary(leagueId) {
+  const [league, drafts] = await Promise.all([
+    sleeperFetch(`/league/${leagueId}`),
+    sleeperFetch(`/league/${leagueId}/drafts`),
+  ]);
+  if (!league || typeof league !== 'object' || Array.isArray(league) ||
+      league.league_id !== leagueId || !/^\d{4}$/.test(league.season) ||
+      !Array.isArray(drafts)) {
+    throw new Error('Invalid upstream draft summary data');
+  }
+  const seen = new Set();
+  const normalized = drafts.map(draft => {
+    if (!draft || typeof draft !== 'object' || Array.isArray(draft) ||
+        typeof draft.draft_id !== 'string' || !/^\d+$/.test(draft.draft_id) ||
+        draft.league_id !== leagueId || typeof draft.season !== 'string' ||
+        !/^\d{4}$/.test(draft.season) || typeof draft.status !== 'string' ||
+        draft.status.length === 0 || typeof draft.type !== 'string' ||
+        draft.type.length === 0 ||
+        (draft.settings?.rounds != null &&
+          (!Number.isInteger(draft.settings.rounds) || draft.settings.rounds < 1))) {
+      throw new Error('Invalid upstream draft record');
+    }
+    if (seen.has(draft.draft_id)) throw new Error('Duplicate upstream draft identity');
+    seen.add(draft.draft_id);
+    return {
+      draft_id: draft.draft_id,
+      season: draft.season,
+      status: draft.status,
+      type: draft.type,
+      rounds: draft.settings?.rounds ?? null,
+    };
+  });
+  return {
+    schema_version: '1',
+    league_id: leagueId,
+    as_of: new Date().toISOString(),
+    scope: 'draft_metadata_only',
+    inventory_complete: false,
+    league_season: league.season,
+    count: normalized.length,
+    drafts: normalized,
+    warnings: ['Draft status alone does not prove whether a specific traded pick remains unexercised.'],
+  };
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -2033,6 +2078,11 @@ if (request.method === 'GET' && parts.length === 4 &&
     parts[0] === 'league' && /^\d+$/.test(parts[1]) &&
     parts[2] === 'traded_picks' && parts[3] === 'enriched') {
   return json(await getTradedDraftPicks(parts[1]));
+}
+if (request.method === 'GET' && parts.length === 4 &&
+    parts[0] === 'league' && /^\d+$/.test(parts[1]) &&
+    parts[2] === 'drafts' && parts[3] === 'summary') {
+  return json(await getLeagueDraftSummary(parts[1]));
 }
 
 
@@ -2215,3 +2265,4 @@ valid_routes: [
     }
   }
 };
+
