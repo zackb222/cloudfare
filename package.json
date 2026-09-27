@@ -1,0 +1,10 @@
+{
+  "name": "sleeper-league-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "check": "node --check index.js && npm test"
+  },
+  "engines": { "node": ">=24" }
+}
