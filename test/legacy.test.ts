@@ -7,6 +7,7 @@ test('Worker routes preserve league, roster, waiver, transaction and matchup beh
     p1: { player_id: 'p1', full_name: 'Fixture Quarterback', position: 'QB', fantasy_positions: ['QB'], active: true, status: 'Active', search_rank: 1 },
     p2: { player_id: 'p2', full_name: 'Fixture Receiver', position: 'WR', fantasy_positions: ['WR'], active: true, status: 'Active', search_rank: 2 },
     p3: { player_id: 'p3', full_name: 'Fixture Free Agent', position: 'RB', fantasy_positions: ['RB'], active: true, status: 'Active', search_rank: 3 },
+    p4: { player_id: 'p4', full_name: 'Fixture Retired Player', position: 'RB', fantasy_positions: ['RB'], active: false, status: 'Inactive', search_rank: 4 },
   };
   const upstream = new Map<string, any>([
     ['/v1/league/123', { league_id: '123', name: 'Fixture League', season: '2026', status: 'pre_draft', total_rosters: 2, roster_positions: ['QB', 'WR', 'SUPER_FLEX', 'BN'], scoring_settings: {}, settings: { waiver_budget: 100, taxi_slots: 2, reserve_slots: 1 } }],
@@ -58,7 +59,10 @@ test('Worker routes preserve league, roster, waiver, transaction and matchup beh
   assert.equal((await get('/league/123/enriched_rosters')).teams.length, 2);
   assert.equal((await get('/league/123/trade_partners/1')).team.roster_id, 1);
   const available = await get('/league/123/available_players?positions=RB&limit=10');
-  assert.deepEqual(available.candidates.map((p: any) => p.player_id), ['p3']);
+  assert.deepEqual(available.candidates.map((p: any) => p.player_id), ['p3', 'p4']);
+  const activeAvailable = await get('/league/123/available_players?positions=RB&limit=10&active_only=true');
+  assert.deepEqual(activeAvailable.candidates.map((p: any) => p.player_id), ['p3']);
+  assert.equal(activeAvailable.filters.active_only, true);
   assert.equal((await get('/league/123/matchups/1/enriched')).matchup_count, 1);
   const transaction = (await get('/league/123/transactions/1/enriched')).transactions[0];
   assert.equal(transaction.draft_picks[0].current_owner_team.team_name, 'Team B');

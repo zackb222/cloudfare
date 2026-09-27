@@ -1514,6 +1514,7 @@ async function getEnrichedTeam(env, leagueId, rosterId) {
 async function getAvailablePlayers(env, leagueId, url) {
   const requestedPositions = parsePositionsParam(url);
   const limit = parseLimitParam(url);
+  const activeOnly = url.searchParams.get("active_only") === "true";
 
   const rosters = await sleeperFetch(`/league/${leagueId}/rosters`);
   const playersDb = await getCachedPlayers(env);
@@ -1532,6 +1533,7 @@ async function getAvailablePlayers(env, leagueId, url) {
     .filter((player) => player && player.player_id)
     .filter((player) => !rosteredPlayerIds.has(String(player.player_id)))
     .filter((player) => playerMatchesPositions(player, requestedPositions))
+    .filter((player) => !activeOnly || player.active === true)
     .filter((player) => player.full_name)
     .map(compactAvailablePlayer)
     .sort((a, b) => {
@@ -1552,7 +1554,8 @@ async function getAvailablePlayers(env, leagueId, url) {
     mode: "available_players",
     filters: {
       positions: requestedPositions,
-      limit
+      limit,
+      active_only: activeOnly
     },
     rostered_player_count: rosteredPlayerIds.size,
     available_player_count: candidates.length,
@@ -1560,7 +1563,7 @@ async function getAvailablePlayers(env, leagueId, url) {
     available_by_position: countCandidatesByPosition(candidates),
     candidates: returnedCandidates,
     note:
-      "This returns available players from the league player pool. Trending status is not required. Player value still requires fantasy context."
+      "This returns available players from the league player pool. The optional active_only filter uses cached Sleeper metadata and is not proof of a current NFL role. Trending status is not required. Player value still requires fantasy context."
   };
 }
 
