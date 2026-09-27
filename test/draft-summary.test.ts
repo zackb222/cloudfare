@@ -42,3 +42,20 @@ test('draft summary preserves distinct drafts and makes no remaining-pick claim'
   assert.equal(response.status, 500);
 });
 
+test('draft summary only matches an exact numeric-league GET route', async t => {
+  let upstreamCalls = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    upstreamCalls++;
+    throw new Error('Unexpected upstream request');
+  });
+  for (const [path, method] of [
+    ['/league/not-a-number/drafts/summary', 'GET'],
+    ['/league/123/drafts/summary/extra', 'GET'],
+    ['/league/123/drafts/summary', 'POST'],
+  ] as const) {
+    const response = await worker.fetch(new Request(`https://worker.invalid${path}`, { method }), {});
+    assert.notEqual(response.status, 200);
+  }
+  assert.equal(upstreamCalls, 0);
+});
+
