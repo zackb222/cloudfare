@@ -1,0 +1,2176 @@
+const SLEEPER_BASE = "https://api.sleeper.app/v1";
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET, OPTIONS",
+      "access-control-allow-headers": "content-type"
+    }
+  });
+}
+
+async function sleeperFetch(path) {
+  const res = await fetch(`${SLEEPER_BASE}${path}`, {
+    headers: { accept: "application/json" }
+  });
+
+  if (!res.ok) {
+    throw new Error(`Sleeper API error ${res.status} for ${path}`);
+  }
+
+  return res.json();
+}
+
+function getKV(env) {
+  const kv = env.SLEEPER_CACHE || env["sleeper-league-worker"];
+
+  if (!kv) {
+    throw new Error(
+      "KV binding not found. Use binding variable SLEEPER_CACHE or sleeper-league-worker."
+    );
+  }
+
+async function getPlayerCacheMeta(env) {
+  const kv = getKV(env);
+
+  const cachedAtRaw = await kv.get("players_nfl_cached_at");
+  const cachedAt = cachedAtRaw ? Number(cachedAtRaw) : 0;
+
+  const playersCached = !!cachedAt;
+  const ageMs = cachedAt ? Date.now() - cachedAt : null;
+  const ageHours =
+    ageMs !== null ? Number((ageMs / (60 * 60 * 1000)).toFixed(2)) : null;
+
+  return {
+    players_cached: playersCached,
+    players_cached_at: cachedAt ? new Date(cachedAt).toISOString() : null,
+    players_cache_age_hours: ageHours,
+    players_cache_fresh: cachedAt ? ageMs < ONE_DAY_MS : false,
+    cache_ttl_hours: 24
+  };
+}
+
+  return kv;
+}
+
+async function getPlayerCacheMeta(env) {
+  const kv = getKV(env);
+
+  const cachedAtRaw = await kv.get("players_nfl_cached_at");
+  const cachedAt = cachedAtRaw ? Number(cachedAtRaw) : 0;
+
+  const playersCached = !!cachedAt;
+  const ageMs = cachedAt ? Date.now() - cachedAt : null;
+  const ageHours =
+    ageMs !== null ? Number((ageMs / (60 * 60 * 1000)).toFixed(2)) : null;
+
+  return {
+    players_cached: playersCached,
+    players_cached_at: cachedAt ? new Date(cachedAt).toISOString() : null,
+    players_cache_age_hours: ageHours,
+    players_cache_fresh: cachedAt ? ageMs < ONE_DAY_MS : false,
+    cache_ttl_hours: 24
+  };
+}
+
+function countCachedPlayers(playersDb) {
+  return playersDb ? Object.keys(playersDb).length : 0;
+}
+
+function compactPlayerMap(fullPlayers) {
+  const compact = {};
+
+  for (const [playerId, p] of Object.entries(fullPlayers)) {
+    if (!p) continue;
+
+    compact[playerId] = {
+      player_id: playerId,
+      full_name:
+        p.full_name ||
+        [p.first_name, p.last_name].filter(Boolean).join(" ") ||
+        p.search_full_name ||
+        playerId,
+      first_name: p.first_name || null,
+      last_name: p.last_name || null,
+      position: p.position || null,
+      fantasy_positions: p.fantasy_positions || [],
+      team: p.team || null,
+      status: p.status || null,
+      injury_status: p.injury_status || null,
+      active: p.active ?? null,
+      age: p.age ?? null,
+      years_exp: p.years_exp ?? null,
+      search_rank: p.search_rank ?? null,
+      depth_chart_position: p.depth_chart_position ?? null,
+      depth_chart_order: p.depth_chart_order ?? null,
+    };
+  }
+
+  return compact;
+}
+
+async function refreshPlayerCache(env) {
+  const kv = getKV(env);
+
+  const startedAt = Date.now();
+
+  const fullPlayers = await sleeperFetch("/players/nfl");
+  const compact = compactPlayerMap(fullPlayers);
+  const cachedAt = Date.now();
+
+  await kv.put("players_nfl_compact", JSON.stringify(compact));
+  await kv.put("players_nfl_cached_at", String(cachedAt));
+
+  return {
+    refreshed: true,
+    players_cached: true,
+    player_count: countCachedPlayers(compact),
+    players_cached_at: new Date(cachedAt).toISOString(),
+    refresh_duration_ms: Date.now() - startedAt,
+    cache_ttl_hours: 24
+  };
+}
+
+
+async function getCachedPlayers(env) {
+  const kv = getKV(env);
+
+  const cachedAtRaw = await kv.get("players_nfl_cached_at");
+  const cachedAt = cachedAtRaw ? Number(cachedAtRaw) : 0;
+
+  const cachedPlayers = await kv.get("players_nfl_compact", {
+    type: "json"
+  });
+
+  const isFresh = cachedPlayers && Date.now() - cachedAt < ONE_DAY_MS;
+
+  if (isFresh) {
+    return cachedPlayers;
+  }
+
+  try {
+  const refreshResult = await refreshPlayerCache(env);
+
+  const refreshedPlayers = await kv.get("players_nfl_compact", {
+    type: "json"
+  });
+
+  if (refreshedPlayers) {
+    return refreshedPlayers;
+  }
+
+  throw new Error(
+    `Player cache refresh completed but cached player map could not be read. Refreshed ${refreshResult.player_count} players.`
+  );
+} catch (err) {
+  if (cachedPlayers) {
+    return cachedPlayers;
+  }
+
+  throw err;
+}}
+
+function isEmptyPlayerId(playerId) {
+  return (
+    playerId === null ||
+    playerId === undefined ||
+    playerId === "" ||
+    String(playerId) === "0"
+  );
+}
+
+function mapPlayer(playersDb, playerId) {
+  if (isEmptyPlayerId(playerId)) {
+    return {
+      player_id: String(playerId ?? "0"),
+      full_name: "Empty Slot",
+      position: "EMPTY",
+      fantasy_positions: [],
+      team: null,
+      status: null,
+      injury_status: null,
+      active: false,
+      is_empty: true
+    };
+  }
+
+  const p = playersDb[playerId];
+
+  if (!p) {
+    return {
+      player_id: playerId,
+      full_name:
+        String(playerId).length <= 3
+          ? `${playerId} DST`
+          : `Unknown Player (${playerId})`,
+      position: null,
+      fantasy_positions: [],
+      team: null,
+      status: null,
+      injury_status: null,
+      active: null,
+      is_empty: false
+    };
+  }
+
+  return {
+    ...p,
+    is_empty: false
+  };
+}
+
+function sleeperPoints(settings = {}, prefix = "fpts") {
+  const base = settings[prefix] || 0;
+  const decimal = settings[`${prefix}_decimal`] || 0;
+  return Number((base + decimal / 100).toFixed(2));
+}
+
+function winPct(record = {}) {
+  const wins = record.wins || 0;
+  const losses = record.losses || 0;
+  const ties = record.ties || 0;
+  const games = wins + losses + ties;
+
+  if (games === 0) return 0;
+
+  return Number(((wins + ties * 0.5) / games).toFixed(3));
+}
+
+function recordString(record = {}) {
+  const wins = record.wins || 0;
+  const losses = record.losses || 0;
+  const ties = record.ties || 0;
+
+  return ties ? `${wins}-${losses}-${ties}` : `${wins}-${losses}`;
+}
+
+function rankDescending(teams, field) {
+  const sorted = [...teams].sort((a, b) => {
+    return (b[field] || 0) - (a[field] || 0);
+  });
+
+  const ranks = {};
+
+  sorted.forEach((team, index) => {
+    ranks[team.roster_id] = index + 1;
+  });
+
+  return ranks;
+}
+
+function rankAscending(teams, field) {
+  const sorted = [...teams].sort((a, b) => {
+    return (a[field] || 0) - (b[field] || 0);
+  });
+
+  const ranks = {};
+
+  sorted.forEach((team, index) => {
+    ranks[team.roster_id] = index + 1;
+  });
+
+  return ranks;
+}
+
+function rankStandings(teams) {
+  const sorted = [...teams].sort((a, b) => {
+    const aWinPct = winPct(a.record);
+    const bWinPct = winPct(b.record);
+
+    if (bWinPct !== aWinPct) return bWinPct - aWinPct;
+    return (b.points_for || 0) - (a.points_for || 0);
+  });
+
+  const ranks = {};
+
+  sorted.forEach((team, index) => {
+    ranks[team.roster_id] = index + 1;
+  });
+
+  return ranks;
+}
+
+function getPlayerPosition(player) {
+  if (!player || player.is_empty) return "EMPTY";
+
+  return (
+    player.position ||
+    (Array.isArray(player.fantasy_positions)
+      ? player.fantasy_positions[0]
+      : null) ||
+    "UNKNOWN"
+  );
+}
+
+function countPlayersByPosition(players = {}) {
+  const counts = {};
+
+  for (const group of Object.values(players)) {
+    for (const player of group || []) {
+      const position = getPlayerPosition(player);
+      counts[position] = (counts[position] || 0) + 1;
+    }
+  }
+
+  return counts;
+}
+
+function countEmptyPlayers(players = []) {
+  return players.filter((player) => player?.is_empty).length;
+}
+
+function availabilitySummary(players = []) {
+  const summary = {
+    empty_slots: 0,
+    unavailable: 0,
+    questionable: 0,
+    doubtful: 0,
+    out: 0,
+    injured_reserve: 0
+  };
+
+  for (const player of players) {
+    if (!player) continue;
+
+    if (player.is_empty) {
+      summary.empty_slots += 1;
+      continue;
+    }
+
+    const injury = String(player.injury_status || "").toLowerCase();
+    const status = String(player.status || "").toLowerCase();
+
+    if (injury === "questionable") summary.questionable += 1;
+    if (injury === "doubtful") summary.doubtful += 1;
+    if (injury === "out") summary.out += 1;
+
+    if (injury === "ir" || status === "injured_reserve") {
+      summary.injured_reserve += 1;
+    }
+
+    if (
+      injury === "out" ||
+      injury === "ir" ||
+      injury === "doubtful" ||
+      status === "inactive" ||
+      status === "injured_reserve"
+    ) {
+      summary.unavailable += 1;
+    }
+  }
+
+  return summary;
+}
+
+function luckLabel(luckScore) {
+  if (luckScore >= 4) return "Strongly overperforming scoring rank";
+  if (luckScore >= 2) return "Somewhat overperforming scoring rank";
+  if (luckScore <= -4) return "Strongly underperforming scoring rank";
+  if (luckScore <= -2) return "Somewhat underperforming scoring rank";
+  return "Record roughly matches scoring rank";
+}
+
+
+function buildTeamMetrics(team, rankContext = {}) {
+  const starters = team.starters || [];
+  const bench = team.bench || [];
+  const reserve = team.reserve || [];
+  const taxi = team.taxi || [];
+
+  const allPlayers = [...starters, ...bench, ...reserve, ...taxi];
+
+  const standingsRank = rankContext.standingsRanks?.[team.roster_id] || null;
+  const pointsForRank = rankContext.pointsForRanks?.[team.roster_id] || null;
+  const pointsAgainstHighestRank =
+    rankContext.pointsAgainstHighestRanks?.[team.roster_id] || null;
+  const pointsAgainstLowestRank =
+    rankContext.pointsAgainstLowestRanks?.[team.roster_id] || null;
+
+  const luckScore =
+    standingsRank && pointsForRank ? pointsForRank - standingsRank : null;
+
+  return {
+    standings_rank: standingsRank,
+    points_for_rank: pointsForRank,
+    points_against_rank_highest: pointsAgainstHighestRank,
+    points_against_rank_lowest: pointsAgainstLowestRank,
+
+    luck_score: luckScore,
+    luck_label: luckScore === null ? null : luckLabel(luckScore),
+
+    win_pct: winPct(team.record),
+    record_display: recordString(team.record),
+
+    roster_counts: {
+      starters: starters.length,
+      bench: bench.length,
+      reserve: reserve.length,
+      taxi: taxi.length,
+      total: allPlayers.length
+    },
+
+    empty_slots: {
+      starters: countEmptyPlayers(starters),
+      total: countEmptyPlayers(allPlayers)
+    },
+
+    position_counts: {
+      starters: countByPosition(starters),
+      bench: countByPosition(bench),
+      reserve: countByPosition(reserve),
+      taxi: countByPosition(taxi),
+      total: countPlayersByPosition({
+        starters,
+        bench,
+        reserve,
+        taxi
+      })
+    },
+
+    availability: availabilitySummary(allPlayers)
+  };
+}
+
+function playerFantasyPoints(player) {
+  return Number(player?.points || 0);
+}
+
+function sumPlayerPoints(players = []) {
+  return Number(
+    players.reduce((sum, player) => sum + playerFantasyPoints(player), 0).toFixed(2)
+  );
+}
+
+function sortPlayersByPoints(players = []) {
+  return [...players].sort((a, b) => playerFantasyPoints(b) - playerFantasyPoints(a));
+}
+
+function summarizeUnavailablePlayers(players = []) {
+  return players
+    .filter((player) => {
+      if (!player || player.is_empty) return false;
+
+      const injury = String(player.injury_status || "").toLowerCase();
+      const status = String(player.status || "").toLowerCase();
+
+      return (
+        injury === "out" ||
+        injury === "doubtful" ||
+        injury === "ir" ||
+        status === "inactive" ||
+        status === "injured_reserve"
+      );
+    })
+    .map((player) => ({
+      player_id: player.player_id,
+      player_name: player.full_name,
+      position: player.position,
+      nfl_team: player.team,
+      injury_status: player.injury_status,
+      status: player.status
+    }));
+}
+
+function findBenchPlayersOutscoringStarters(starters = [], bench = []) {
+  const sortedStarters = sortPlayersByPoints(starters);
+  const sortedBench = sortPlayersByPoints(bench);
+
+  const lowestScoringStarter = sortedStarters[sortedStarters.length - 1];
+
+  if (!lowestScoringStarter) return [];
+
+  return sortedBench
+    .filter((benchPlayer) => {
+      return playerFantasyPoints(benchPlayer) > playerFantasyPoints(lowestScoringStarter);
+    })
+    .slice(0, 5)
+    .map((benchPlayer) => ({
+      bench_player: {
+        player_id: benchPlayer.player_id,
+        player_name: benchPlayer.full_name,
+        position: benchPlayer.position,
+        nfl_team: benchPlayer.team,
+        points: playerFantasyPoints(benchPlayer)
+      },
+      outscored_lowest_starter: {
+        player_id: lowestScoringStarter.player_id,
+        player_name: lowestScoringStarter.full_name,
+        position: lowestScoringStarter.position,
+        nfl_team: lowestScoringStarter.team,
+        points: playerFantasyPoints(lowestScoringStarter)
+      },
+      point_difference: Number(
+        (playerFantasyPoints(benchPlayer) - playerFantasyPoints(lowestScoringStarter)).toFixed(2)
+      )
+    }));
+}
+
+function buildSimpleOptimalLineup(starters = [], bench = []) {
+  const starterCount = starters.length;
+  const allPlayers = [...starters, ...bench].filter((player) => player && !player.is_empty);
+
+  const optimalPlayers = sortPlayersByPoints(allPlayers).slice(0, starterCount);
+  const optimalPoints = sumPlayerPoints(optimalPlayers);
+  const actualStarterPoints = sumPlayerPoints(starters);
+
+  return {
+    actual_starter_points: actualStarterPoints,
+    simple_optimal_points: optimalPoints,
+    points_left_on_bench: Number((optimalPoints - actualStarterPoints).toFixed(2)),
+    note: "Simple optimal lineup is based on top scorers only and does not enforce exact roster-slot eligibility."
+  };
+}
+
+function buildTeamMatchupSummary(teamMatchup) {
+  const starters = teamMatchup.starters || [];
+  const bench = teamMatchup.bench || [];
+  const allPlayers = [...starters, ...bench];
+
+  const optimal = buildSimpleOptimalLineup(starters, bench);
+
+  return {
+    roster_id: teamMatchup.roster_id,
+    team_name: teamMatchup.team_name,
+    manager: teamMatchup.manager,
+
+    week_points: Number(teamMatchup.week_points || 0),
+    starter_points: sumPlayerPoints(starters),
+    bench_points: sumPlayerPoints(bench),
+
+    empty_starter_slots: countEmptyPlayers(starters),
+    unavailable_starters: summarizeUnavailablePlayers(starters),
+    unavailable_bench: summarizeUnavailablePlayers(bench),
+
+    top_starters: sortPlayersByPoints(starters).slice(0, 3).map((player) => ({
+      player_id: player.player_id,
+      player_name: player.full_name,
+      position: player.position,
+      nfl_team: player.team,
+      points: playerFantasyPoints(player)
+    })),
+
+    top_bench: sortPlayersByPoints(bench).slice(0, 3).map((player) => ({
+      player_id: player.player_id,
+      player_name: player.full_name,
+      position: player.position,
+      nfl_team: player.team,
+      points: playerFantasyPoints(player)
+    })),
+
+    bench_players_outscoring_lowest_starter:
+      findBenchPlayersOutscoringStarters(starters, bench),
+
+    simple_optimal_lineup: optimal
+  };
+}
+
+function buildMatchupSummary(matchup) {
+  const teams = matchup.teams || [];
+
+  const sortedTeams = [...teams].sort((a, b) => {
+    return Number(b.week_points || 0) - Number(a.week_points || 0);
+  });
+
+  const leader = sortedTeams[0] || null;
+  const second = sortedTeams[1] || null;
+
+  const margin =
+    leader && second
+      ? Number(((leader.week_points || 0) - (second.week_points || 0)).toFixed(2))
+      : null;
+
+  const allTeamsHaveZero =
+    teams.length > 0 && teams.every((team) => Number(team.week_points || 0) === 0);
+
+  return {
+    matchup_id: matchup.matchup_id,
+    team_count: teams.length,
+    leader:
+      leader && !allTeamsHaveZero
+        ? {
+            roster_id: leader.roster_id,
+            team_name: leader.team_name,
+            manager: leader.manager,
+            week_points: leader.week_points
+          }
+        : null,
+    margin,
+    status_note: allTeamsHaveZero
+      ? "No meaningful matchup scoring yet."
+      : "Matchup scoring is available.",
+    teams: teams.map((team) => buildTeamMatchupSummary(team))
+  };
+}
+const TRADE_POSITIONS = ["QB", "RB", "WR", "TE"];
+
+function getTradePosition(player) {
+  if (!player || player.is_empty) return null;
+
+  const position =
+    player.position ||
+    (Array.isArray(player.fantasy_positions)
+      ? player.fantasy_positions[0]
+      : null);
+
+  if (!position) return null;
+
+  if (position === "DEF" || position === "DST") return "DEF";
+
+  return position;
+}
+
+function parsePositionsParam(url) {
+  const raw = url.searchParams.get("positions");
+
+  if (!raw) {
+    return ["QB", "RB", "WR", "TE"];
+  }
+
+  return raw
+    .split(",")
+    .map((position) => position.trim().toUpperCase())
+    .filter(Boolean);
+}
+
+function parseLimitParam(url, defaultLimit = 100, maxLimit = 250) {
+  const raw = Number(url.searchParams.get("limit"));
+
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return defaultLimit;
+  }
+
+  return Math.min(Math.floor(raw), maxLimit);
+}
+
+function getPlayerPositionSet(player) {
+  const positions = new Set();
+
+  if (player?.position) {
+    positions.add(String(player.position).toUpperCase());
+  }
+
+  for (const position of player?.fantasy_positions || []) {
+    positions.add(String(position).toUpperCase());
+  }
+
+  return positions;
+}
+
+function playerMatchesPositions(player, requestedPositions) {
+  const playerPositions = getPlayerPositionSet(player);
+
+  return requestedPositions.some((position) => playerPositions.has(position));
+}
+
+function getSearchRank(player) {
+  const rank = Number(player?.search_rank);
+
+  if (Number.isFinite(rank) && rank > 0) {
+    return rank;
+  }
+
+  return 999999;
+}
+
+function compactAvailablePlayer(player) {
+  return {
+    player_id: player.player_id,
+    full_name: player.full_name,
+    first_name: player.first_name,
+    last_name: player.last_name,
+    position: player.position,
+    fantasy_positions: player.fantasy_positions || [],
+    nfl_team: player.team || player.nfl_team || null,
+    status: player.status,
+    injury_status: player.injury_status,
+    age: player.age ?? null,
+    years_exp: player.years_exp ?? null,
+    active: player.active ?? null,
+    search_rank: player.search_rank ?? null,
+    depth_chart_position: player.depth_chart_position ?? null,
+    depth_chart_order: player.depth_chart_order ?? null,
+    is_available: true
+  };
+}
+
+function countCandidatesByPosition(players) {
+  const counts = {};
+
+  for (const player of players) {
+    const position = player.position || "UNKNOWN";
+    counts[position] = (counts[position] || 0) + 1;
+  }
+
+  return counts;
+}
+
+function buildBasicTradeProfile(team, league) {
+  const positionProfile = classifyPositionNeeds(team, league);
+
+  return {
+    needs: positionProfile.needs,
+    hard_needs: positionProfile.hard_needs,
+    depth_needs: positionProfile.depth_needs,
+    surplus: positionProfile.surplus,
+    neutral: positionProfile.neutral,
+    active_counts: positionProfile.active_counts,
+    recommended_depth: positionProfile.recommended_depth,
+    roster_slot_profile: positionProfile.roster_slot_profile,
+    trade_chips_by_position: buildTradeChips(team, positionProfile.surplus),
+    notes: [
+      "Trade profile is based on roster construction and positional depth.",
+      "It does not yet include external player rankings or projected fantasy points.",
+      "Use this as a trade-fit filter, not a final player-value verdict."
+    ]
+  };
+}
+
+function buildLeagueTradeProfiles(teams = [], league = {}) {
+  const baseProfiles = {};
+
+  for (const team of teams) {
+    baseProfiles[team.roster_id] = buildBasicTradeProfile(team, league);
+  }
+
+  function positionGap(profile, position) {
+    const active = profile.active_counts?.[position] || 0;
+    const target = profile.recommended_depth?.[position] || 0;
+    return active - target;
+  }
+
+  function getRelativeTargets(myProfile, otherProfile) {
+    const targets = [];
+    const shops = [];
+
+    for (const position of TRADE_POSITIONS) {
+      const myGap = positionGap(myProfile, position);
+      const otherGap = positionGap(otherProfile, position);
+
+      // They are stronger than me at this position.
+      if (otherGap > myGap) {
+        targets.push({
+          position,
+          my_gap: myGap,
+          their_gap: otherGap,
+          gap_difference: otherGap - myGap
+        });
+      }
+
+      // I am stronger than them at this position.
+      if (myGap > otherGap) {
+        shops.push({
+          position,
+          my_gap: myGap,
+          their_gap: otherGap,
+          gap_difference: myGap - otherGap
+        });
+      }
+    }
+
+    targets.sort((a, b) => b.gap_difference - a.gap_difference);
+    shops.sort((a, b) => b.gap_difference - a.gap_difference);
+
+    return {
+      positions_to_target_from_them: targets,
+      positions_to_shop_to_them: shops
+    };
+  }
+
+  const finalProfiles = {};
+
+  for (const team of teams) {
+    const myProfile = baseProfiles[team.roster_id];
+
+    const possiblePartners = teams
+      .filter((otherTeam) => otherTeam.roster_id !== team.roster_id)
+      .map((otherTeam) => {
+        const otherProfile = baseProfiles[otherTeam.roster_id];
+
+        const theyNeedMySurplus = intersection(
+          myProfile.surplus,
+          otherProfile.needs
+        );
+
+        const iNeedTheirSurplus = intersection(
+          otherProfile.surplus,
+          myProfile.needs
+        );
+
+        const relativeFit = getRelativeTargets(myProfile, otherProfile);
+
+        const oneWayFit = theyNeedMySurplus.length > 0;
+        const twoWayFit =
+          theyNeedMySurplus.length > 0 && iNeedTheirSurplus.length > 0;
+
+        const relativeTargetScore =
+          relativeFit.positions_to_target_from_them
+            .slice(0, 2)
+            .reduce((sum, item) => sum + item.gap_difference, 0);
+
+        const relativeShopScore =
+          relativeFit.positions_to_shop_to_them
+            .slice(0, 2)
+            .reduce((sum, item) => sum + item.gap_difference, 0);
+
+        const strictFitScore =
+          theyNeedMySurplus.length * 2 +
+          iNeedTheirSurplus.length * 3 +
+          (twoWayFit ? 3 : 0);
+
+        const relativeFitScore =
+          Math.min(relativeTargetScore, 4) + Math.min(relativeShopScore, 4);
+
+        const fitScore = strictFitScore * 10 + relativeFitScore;
+
+        let fitType = "weak relative fit";
+        let recommendationTier = "weak";
+
+        if (twoWayFit) {
+          fitType = "strong two-way fit";
+          recommendationTier = "strong";
+        } else if (oneWayFit || iNeedTheirSurplus.length > 0) {
+          fitType = "moderate positional fit";
+          recommendationTier = "moderate";
+        } else if (relativeFitScore >= 3) {
+          fitType = "relative roster-balance fit";
+          recommendationTier = "speculative";
+        }
+
+        const topTargets = relativeFit.positions_to_target_from_them
+          .slice(0, 2)
+          .map((item) => item.position);
+
+        const topShops = relativeFit.positions_to_shop_to_them
+          .slice(0, 2)
+          .map((item) => item.position);
+
+        let reason = "No obvious surplus/need match, but this is one of the better relative roster-balance fits.";
+
+        if (twoWayFit) {
+          reason = `Strong two-way fit: they need ${theyNeedMySurplus.join(", ")} and have surplus ${iNeedTheirSurplus.join(", ")}.`;
+        } else if (oneWayFit) {
+          reason = `They need ${theyNeedMySurplus.join(", ")}, which this team has in surplus.`;
+        } else if (iNeedTheirSurplus.length > 0) {
+          reason = `They have surplus ${iNeedTheirSurplus.join(", ")}, which fits this team's needs.`;
+        } else if (topTargets.length || topShops.length) {
+          reason = `Relative fit: consider targeting ${topTargets.join(", ") || "their depth"} and shopping ${topShops.join(", ") || "your depth"}.`;
+        }
+
+        return {
+          roster_id: otherTeam.roster_id,
+          team_name: otherTeam.team_name,
+          manager: otherTeam.manager,
+          fit_score: fitScore,
+          fit_type: fitType,
+          recommendation_tier: recommendationTier,
+
+          my_surplus_they_need: theyNeedMySurplus,
+          their_surplus_i_need: iNeedTheirSurplus,
+
+          relative_fit: relativeFit,
+
+          suggested_positions_to_target: topTargets,
+          suggested_positions_to_shop: topShops,
+
+          their_needs: otherProfile.needs,
+          their_surplus: otherProfile.surplus,
+          their_active_counts: otherProfile.active_counts,
+          their_recommended_depth: otherProfile.recommended_depth,
+
+          reason
+        };
+      })
+      .sort((a, b) => b.fit_score - a.fit_score)
+      .slice(0, 8);
+
+    finalProfiles[team.roster_id] = {
+      ...myProfile,
+      possible_trade_partners: possiblePartners,
+      trade_partner_logic: {
+        model: "positional construction plus relative roster-balance fit",
+        note: "Strong fits require direct need/surplus overlap. Weak or speculative fits are included as fallback options when no clean positional match exists."
+      }
+    };
+  }
+
+  return finalProfiles;
+}
+
+function getAllRosterPlayers(team) {
+  return [
+    ...(team.starters || []),
+    ...(team.bench || []),
+    ...(team.reserve || []),
+    ...(team.taxi || [])
+  ].filter((player) => player && !player.is_empty);
+}
+
+function getActiveRosterPlayers(team) {
+  return [
+    ...(team.starters || []),
+    ...(team.bench || [])
+  ].filter((player) => player && !player.is_empty);
+}
+
+function countActiveByTradePosition(team) {
+  const counts = {};
+
+  for (const position of TRADE_POSITIONS) {
+    counts[position] = 0;
+  }
+
+  for (const player of getActiveRosterPlayers(team)) {
+    const position = getTradePosition(player);
+
+    if (TRADE_POSITIONS.includes(position)) {
+      counts[position] += 1;
+    }
+  }
+
+  return counts;
+}
+
+function getPlayersByTradePosition(team) {
+  const grouped = {};
+
+  for (const position of TRADE_POSITIONS) {
+    grouped[position] = {
+      starters: [],
+      bench: [],
+      reserve: [],
+      taxi: []
+    };
+  }
+
+  const groups = {
+    starters: team.starters || [],
+    bench: team.bench || [],
+    reserve: team.reserve || [],
+    taxi: team.taxi || []
+  };
+
+  for (const [groupName, players] of Object.entries(groups)) {
+    for (const player of players) {
+      if (!player || player.is_empty) continue;
+
+      const position = getTradePosition(player);
+
+      if (TRADE_POSITIONS.includes(position)) {
+        grouped[position][groupName].push({
+          player_id: player.player_id,
+          full_name: player.full_name,
+          position: player.position,
+          nfl_team: player.team,
+          injury_status: player.injury_status,
+          status: player.status,
+          age: player.age ?? null
+        });
+      }
+    }
+  }
+
+  return grouped;
+}
+
+function getRosterSlotProfile(rosterPositions = []) {
+  const exactStarterSlots = {
+    QB: 0,
+    RB: 0,
+    WR: 0,
+    TE: 0
+  };
+
+  let flex_slots = 0;
+  let super_flex_slots = 0;
+
+  const nonStarterSlots = new Set([
+    "BN",
+    "BENCH",
+    "IR",
+    "TAXI",
+    "RESERVE"
+  ]);
+
+  for (const slot of rosterPositions || []) {
+    if (!slot || nonStarterSlots.has(slot)) continue;
+
+    if (TRADE_POSITIONS.includes(slot)) {
+      exactStarterSlots[slot] += 1;
+      continue;
+    }
+
+    if (
+      slot === "FLEX" ||
+      slot === "REC_FLEX" ||
+      slot === "WRRB_FLEX" ||
+      slot === "WRRBTE_FLEX"
+    ) {
+      flex_slots += 1;
+      continue;
+    }
+
+    if (slot === "SUPER_FLEX" || slot === "OP") {
+      super_flex_slots += 1;
+      continue;
+    }
+  }
+
+  return {
+    exact_starter_slots: exactStarterSlots,
+    flex_slots,
+    super_flex_slots
+  };
+}
+
+function recommendedDepthByPosition(league = {}) {
+  const profile = getRosterSlotProfile(league.roster_positions || []);
+  const exact = profile.exact_starter_slots;
+
+  return {
+    QB: exact.QB + (profile.super_flex_slots > 0 ? 2 : 1),
+    RB: exact.RB + Math.max(2, profile.flex_slots + 1),
+    WR: exact.WR + Math.max(2, profile.flex_slots + 1),
+    TE: exact.TE + 1
+  };
+}
+
+function classifyPositionNeeds(team, league) {
+  const activeCounts = countActiveByTradePosition(team);
+  const recommended = recommendedDepthByPosition(league);
+  const profile = getRosterSlotProfile(league.roster_positions || []);
+
+  const needs = [];
+  const hard_needs = [];
+  const depth_needs = [];
+  const surplus = [];
+  const neutral = [];
+
+  for (const position of TRADE_POSITIONS) {
+    const active = activeCounts[position] || 0;
+    const exactRequired = profile.exact_starter_slots[position] || 0;
+    const target = recommended[position] || 0;
+
+    if (active < exactRequired) {
+      hard_needs.push(position);
+      needs.push(position);
+      continue;
+    }
+
+    if (active < target) {
+      depth_needs.push(position);
+      needs.push(position);
+      continue;
+    }
+
+    const surplusBuffer = position === "RB" || position === "WR" ? 2 : 1;
+
+    if (active >= target + surplusBuffer) {
+      surplus.push(position);
+    } else {
+      neutral.push(position);
+    }
+  }
+
+  return {
+    needs,
+    hard_needs,
+    depth_needs,
+    surplus,
+    neutral,
+    active_counts: activeCounts,
+    recommended_depth: recommended,
+    roster_slot_profile: profile
+  };
+}
+
+function buildTradeChips(team, surplusPositions = []) {
+  const playersByPosition = getPlayersByTradePosition(team);
+  const chips = {};
+
+  for (const position of surplusPositions) {
+    const group = playersByPosition[position];
+
+    if (!group) continue;
+
+    chips[position] = [
+      ...(group.bench || []),
+      ...(group.reserve || []),
+      ...(group.taxi || [])
+    ].slice(0, 6);
+  }
+
+  return chips;
+}
+
+function intersection(a = [], b = []) {
+  const bSet = new Set(b);
+  return a.filter((item) => bSet.has(item));
+}
+
+function countByPosition(players = []) {
+  const counts = {};
+
+  for (const player of players) {
+    if (!player) continue;
+
+    const position =
+      player.position ||
+      (Array.isArray(player.fantasy_positions)
+        ? player.fantasy_positions[0]
+        : null) ||
+      "UNKNOWN";
+
+    counts[position] = (counts[position] || 0) + 1;
+  }
+
+  return counts;
+}
+
+function countUnavailablePlayers(players = []) {
+  return players.filter((player) => {
+    if (!player) return false;
+
+    const injury = String(player.injury_status || "").toLowerCase();
+    const status = String(player.status || "").toLowerCase();
+
+    return (
+      injury === "out" ||
+      injury === "ir" ||
+      injury === "doubtful" ||
+      status === "inactive" ||
+      status === "injured_reserve"
+    );
+  }).length;
+}
+
+function buildUserMap(users) {
+  const map = {};
+
+  for (const user of users) {
+    const metadata = user.metadata || {};
+
+    map[user.user_id] = {
+      user_id: user.user_id,
+      username: user.username || null,
+      display_name: user.display_name || null,
+      team_name:
+        metadata.team_name ||
+        metadata.display_name ||
+        user.display_name ||
+        user.username ||
+        "Unnamed Team"
+    };
+  }
+
+  return map;
+}
+
+function buildRosterTeamMap(rosters, users) {
+  const userMap = buildUserMap(users);
+  const map = {};
+
+  for (const roster of rosters) {
+    const owner = userMap[roster.owner_id] || {};
+
+    map[roster.roster_id] = {
+      roster_id: roster.roster_id,
+      owner_id: roster.owner_id,
+      team_name: owner.team_name || `Roster ${roster.roster_id}`,
+      manager: owner.display_name || owner.username || null
+    };
+  }
+
+  return map;
+}
+
+function buildPlayerOwnershipMap(rosters, users) {
+  const rosterMap = buildRosterTeamMap(rosters, users);
+  const ownership = {};
+
+  for (const roster of rosters || []) {
+    const team = rosterMap[roster.roster_id];
+    const playerIds = roster.players || [];
+
+    for (const playerId of playerIds) {
+      ownership[playerId] = {
+        owned: true,
+        roster_id: roster.roster_id,
+        team_name: team?.team_name || `Roster ${roster.roster_id}`,
+        manager: team?.manager || null
+      };
+    }
+  }
+
+  return ownership;
+}
+
+function teamLabel(rosterMap, rosterId) {
+  const team = rosterMap[rosterId];
+
+  return {
+    roster_id: rosterId,
+    team_name: team?.team_name || `Roster ${rosterId}`,
+    manager: team?.manager || null
+  };
+}
+
+function enrichMovementMap(movementMap = {}, playersDb, rosterMap, direction) {
+  return Object.entries(movementMap || {}).map(([playerId, rosterId]) => {
+    const player = mapPlayer(playersDb, playerId);
+    const team = teamLabel(rosterMap, rosterId);
+
+    return {
+      direction,
+      player_id: playerId,
+      player_name: player?.full_name || `Unknown Player (${playerId})`,
+      position: player?.position || null,
+      nfl_team: player?.team || null,
+      injury_status: player?.injury_status || null,
+      status: player?.status || null,
+      roster_id: team.roster_id,
+      team_name: team.team_name,
+      manager: team.manager
+    };
+  });
+}
+
+function enrichDraftPicks(picks = [], rosterMap) {
+  return (picks || []).map((pick) => {
+    return {
+      ...pick,
+      original_owner_team: teamLabel(rosterMap, pick.roster_id),
+      previous_owner_team: teamLabel(rosterMap, pick.previous_owner_id),
+      current_owner_team: teamLabel(rosterMap, pick.owner_id)
+    };
+  });
+}
+
+function enrichWaiverBudget(waiverBudget = [], rosterMap) {
+  return (waiverBudget || []).map((entry) => {
+    return {
+      ...entry,
+      sender_team: teamLabel(rosterMap, entry.sender),
+      receiver_team: teamLabel(rosterMap, entry.receiver)
+    };
+  });
+}
+
+function compactPlayer(player) {
+  if (!player) return null;
+
+  return {
+    player_id: player.player_id,
+    full_name: player.full_name,
+    position: player.position,
+    fantasy_positions: player.fantasy_positions || [],
+    nfl_team: player.team,
+    injury_status: player.injury_status,
+    status: player.status,
+    age: player.age ?? null,
+    is_empty: player.is_empty || false
+  };
+}
+
+function compactPlayers(players = [], limit = 20) {
+  return (players || [])
+    .map(compactPlayer)
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function preseasonPositionBalanceScore(team, league) {
+  const profile = classifyPositionNeeds(team, league);
+  const active = profile.active_counts || {};
+  const recommended = profile.recommended_depth || {};
+
+  let score = 70;
+
+  for (const position of TRADE_POSITIONS) {
+    const count = active[position] || 0;
+    const target = recommended[position] || 0;
+    const gap = count - target;
+
+    if (gap < 0) {
+      score += gap * 6;
+    }
+
+    if (gap >= 0) {
+      score += Math.min(gap, 2) * 2;
+    }
+  }
+
+  score -= (profile.hard_needs || []).length * 12;
+  score -= (profile.depth_needs || []).length * 5;
+  score += (profile.surplus || []).length * 2;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function preseasonAvailabilityScore(team) {
+  const starters = team.starters || [];
+  const bench = team.bench || [];
+  const allPlayers = [...starters, ...bench, ...(team.reserve || []), ...(team.taxi || [])];
+
+  const availability = availabilitySummary(allPlayers);
+  const emptyStarters = countEmptyPlayers(starters);
+
+  let score = 100;
+
+  score -= emptyStarters * 20;
+  score -= (availability.unavailable || 0) * 8;
+  score -= (availability.doubtful || 0) * 5;
+  score -= (availability.questionable || 0) * 2;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function preseasonDepthFlexibilityScore(team) {
+  const activeCounts = countActiveByTradePosition(team);
+
+  let score = 50;
+
+  score += Math.min(activeCounts.QB || 0, 3) * 5;
+  score += Math.min(activeCounts.RB || 0, 7) * 4;
+  score += Math.min(activeCounts.WR || 0, 8) * 3;
+  score += Math.min(activeCounts.TE || 0, 3) * 3;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function buildPreseasonRankingScore(team, league) {
+  const balance = preseasonPositionBalanceScore(team, league);
+  const availability = preseasonAvailabilityScore(team);
+  const flexibility = preseasonDepthFlexibilityScore(team);
+
+  const total = Math.round(
+    balance * 0.45 +
+    availability * 0.25 +
+    flexibility * 0.30
+  );
+
+  return {
+    total,
+    components: {
+      position_balance: balance,
+      availability,
+      depth_flexibility: flexibility
+    },
+    note:
+      "Preseason score is based on roster construction, positional balance, availability, and depth flexibility. It does not include external player rankings or projections."
+  };
+}
+
+function enrichRosters(rosters, users, playersDb) {
+  const userMap = buildUserMap(users);
+
+  return rosters.map((roster) => {
+    const settings = roster.settings || {};
+    const owner = userMap[roster.owner_id] || {};
+
+    const starters = roster.starters || [];
+    const reserve = roster.reserve || [];
+    const taxi = roster.taxi || [];
+    const allPlayers = roster.players || [];
+
+    const starterSet = new Set(starters);
+    const reserveSet = new Set(reserve);
+    const taxiSet = new Set(taxi);
+
+    const bench = allPlayers.filter(
+      (id) => !starterSet.has(id) && !reserveSet.has(id) && !taxiSet.has(id)
+    );
+
+    return {
+      roster_id: roster.roster_id,
+      owner_id: roster.owner_id,
+      team_name: owner.team_name || `Roster ${roster.roster_id}`,
+      manager: owner.display_name || owner.username || null,
+      record: {
+        wins: settings.wins || 0,
+        losses: settings.losses || 0,
+        ties: settings.ties || 0
+      },
+      points_for: sleeperPoints(settings, "fpts"),
+      points_against: sleeperPoints(settings, "fpts_against"),
+      waiver_position: settings.waiver_position ?? null,
+      starters: starters.map((id) => mapPlayer(playersDb, id)).filter(Boolean),
+      bench: bench.map((id) => mapPlayer(playersDb, id)).filter(Boolean),
+      reserve: reserve.map((id) => mapPlayer(playersDb, id)).filter(Boolean),
+      taxi: taxi.map((id) => mapPlayer(playersDb, id)).filter(Boolean)
+    };
+  });
+}
+
+async function getEnrichedRosters(env, leagueId) {
+  const [league, users, rosters, playersDb] = await Promise.all([
+    sleeperFetch(`/league/${leagueId}`),
+    sleeperFetch(`/league/${leagueId}/users`),
+    sleeperFetch(`/league/${leagueId}/rosters`),
+    getCachedPlayers(env)
+  ]);
+
+  const cache = await getPlayerCacheMeta(env);
+  const enrichedTeams = enrichRosters(rosters, users, playersDb);
+
+  const rankContext = {
+    standingsRanks: rankStandings(enrichedTeams),
+    pointsForRanks: rankDescending(enrichedTeams, "points_for"),
+    pointsAgainstHighestRanks: rankDescending(enrichedTeams, "points_against"),
+    pointsAgainstLowestRanks: rankAscending(enrichedTeams, "points_against")
+  };
+
+  const leagueInfo = {
+  league_id: league.league_id,
+  name: league.name,
+  season: league.season,
+  status: league.status,
+  sport: league.sport,
+  total_rosters: league.total_rosters,
+  roster_positions: league.roster_positions || [],
+  scoring_settings: league.scoring_settings || {}
+};
+
+const teamsWithMetrics = enrichedTeams.map((team) => {
+  return {
+    ...team,
+    metrics: buildTeamMetrics(team, rankContext)
+  };
+});
+
+const tradeProfiles = buildLeagueTradeProfiles(teamsWithMetrics, leagueInfo);
+
+const teamsWithTradeProfiles = teamsWithMetrics.map((team) => {
+  return {
+    ...team,
+    trade_profile: tradeProfiles[team.roster_id] || null
+  };
+});
+
+return {
+  league: leagueInfo,
+  cache,
+  teams: teamsWithTradeProfiles
+};
+}
+
+async function getEnrichedTeam(env, leagueId, rosterId) {
+  const rosterData = await getEnrichedRosters(env, leagueId);
+  const targetRosterId = Number(rosterId);
+
+  const team = (rosterData.teams || []).find((t) => {
+    return Number(t.roster_id) === targetRosterId;
+  });
+
+  if (!team) {
+    return {
+      error: "Team not found",
+      requested_roster_id: rosterId,
+      league: rosterData.league,
+      available_teams: (rosterData.teams || []).map((t) => ({
+        roster_id: t.roster_id,
+        team_name: t.team_name,
+        manager: t.manager
+      }))
+    };
+  }
+
+  const allPlayers = [
+    ...(team.starters || []),
+    ...(team.bench || []),
+    ...(team.reserve || []),
+    ...(team.taxi || [])
+  ];
+
+  return {
+    league: rosterData.league,
+    cache: rosterData.cache,
+    team: {
+      ...team,
+      roster_summary: {
+        total_players: allPlayers.length,
+        starters_count: (team.starters || []).length,
+        bench_count: (team.bench || []).length,
+        reserve_count: (team.reserve || []).length,
+        taxi_count: (team.taxi || []).length,
+        starter_positions: countByPosition(team.starters || []),
+        bench_positions: countByPosition(team.bench || []),
+        reserve_positions: countByPosition(team.reserve || []),
+        taxi_positions: countByPosition(team.taxi || []),
+        unavailable_players: countUnavailablePlayers(allPlayers)
+      }
+    }
+  };
+}
+
+
+async function getAvailablePlayers(env, leagueId, url) {
+  const requestedPositions = parsePositionsParam(url);
+  const limit = parseLimitParam(url);
+
+  const rosters = await sleeperFetch(`/league/${leagueId}/rosters`);
+  const playersDb = await getCachedPlayers(env);
+
+  const rosteredPlayerIds = new Set();
+
+  for (const roster of rosters || []) {
+    for (const playerId of roster.players || []) {
+      if (!isEmptyPlayerId(playerId)) {
+        rosteredPlayerIds.add(String(playerId));
+      }
+    }
+  }
+
+  const candidates = Object.values(playersDb || {})
+    .filter((player) => player && player.player_id)
+    .filter((player) => !rosteredPlayerIds.has(String(player.player_id)))
+    .filter((player) => playerMatchesPositions(player, requestedPositions))
+    .filter((player) => player.full_name)
+    .map(compactAvailablePlayer)
+    .sort((a, b) => {
+      const rankA = getSearchRank(a);
+      const rankB = getSearchRank(b);
+
+      if (rankA !== rankB) {
+        return rankA - rankB;
+      }
+
+      return String(a.full_name).localeCompare(String(b.full_name));
+    });
+
+  const returnedCandidates = candidates.slice(0, limit);
+
+  return {
+    league_id: leagueId,
+    mode: "available_players",
+    filters: {
+      positions: requestedPositions,
+      limit
+    },
+    rostered_player_count: rosteredPlayerIds.size,
+    available_player_count: candidates.length,
+    returned_count: returnedCandidates.length,
+    available_by_position: countCandidatesByPosition(candidates),
+    candidates: returnedCandidates,
+    note:
+      "This returns available players from the league player pool. Trending status is not required. Player value still requires fantasy context."
+  };
+}
+
+async function getTradePartners(env, leagueId, rosterId) {
+  const rosterData = await getEnrichedRosters(env, leagueId);
+  const targetRosterId = Number(rosterId);
+
+  const team = (rosterData.teams || []).find((t) => {
+    return Number(t.roster_id) === targetRosterId;
+  });
+
+  if (!team) {
+    return {
+      error: "Team not found",
+      requested_roster_id: rosterId,
+      league: rosterData.league,
+      available_teams: (rosterData.teams || []).map((t) => ({
+        roster_id: t.roster_id,
+        team_name: t.team_name,
+        manager: t.manager
+      }))
+    };
+  }
+
+  return {
+    league: rosterData.league,
+    cache: rosterData.cache,
+    team: {
+      roster_id: team.roster_id,
+      team_name: team.team_name,
+      manager: team.manager,
+      record: team.record,
+      points_for: team.points_for,
+      points_against: team.points_against,
+      metrics: team.metrics,
+      trade_profile: team.trade_profile
+    }
+  };
+}
+
+async function getLeagueDashboard(env, leagueId) {
+  const rosterData = await getEnrichedRosters(env, leagueId);
+  const teams = rosterData.teams || [];
+
+  const pointsForRanks = rankDescending(teams, "points_for");
+  const pointsAgainstRanks = rankDescending(teams, "points_against");
+
+  const dashboardTeams = teams
+    .map((team) => {
+      const allPlayers = [
+        ...(team.starters || []),
+        ...(team.bench || []),
+        ...(team.reserve || []),
+        ...(team.taxi || [])
+      ];
+
+      return {
+        roster_id: team.roster_id,
+        team_name: team.team_name,
+        manager: team.manager,
+        record: team.record,
+        record_display: recordString(team.record),
+        win_pct: winPct(team.record),
+        points_for: team.points_for,
+        points_against: team.points_against,
+        standings_rank: team.metrics?.standings_rank || null,
+        points_for_rank: team.metrics?.points_for_rank || null,
+        points_against_rank_highest:
+        team.metrics?.points_against_rank_highest || null,
+        points_against_rank_lowest:
+        team.metrics?.points_against_rank_lowest || null,
+        luck_score: team.metrics?.luck_score ?? null,
+        luck_label: team.metrics?.luck_label || null,
+        waiver_position: team.waiver_position,
+        roster_summary: {
+          starters_count: team.metrics?.roster_counts?.starters || 0,
+          bench_count: team.metrics?.roster_counts?.bench || 0,
+          reserve_count: team.metrics?.roster_counts?.reserve || 0,
+          taxi_count: team.metrics?.roster_counts?.taxi || 0,
+          starter_positions: team.metrics?.position_counts?.starters || {},
+          bench_positions: team.metrics?.position_counts?.bench || {},
+          unavailable_players: team.metrics?.availability?.unavailable || 0,
+          empty_starter_slots: team.metrics?.empty_slots?.starters || 0
+}
+      };
+    })
+    .sort((a, b) => {
+      if (b.win_pct !== a.win_pct) return b.win_pct - a.win_pct;
+      return b.points_for - a.points_for;
+    });
+
+ return {
+  league: rosterData.league,
+  cache: rosterData.cache,
+  dashboard: {
+    generated_at: new Date().toISOString(),
+    team_count: dashboardTeams.length,
+    standings_style_summary: dashboardTeams,
+    league_leaders: {
+      most_points_for:
+        [...dashboardTeams].sort((a, b) => b.points_for - a.points_for)[0] ||
+        null,
+      most_points_against:
+        [...dashboardTeams].sort(
+          (a, b) => b.points_against - a.points_against
+        )[0] || null,
+      fewest_points_against:
+        [...dashboardTeams].sort(
+          (a, b) => a.points_against - b.points_against
+        )[0] || null
+    },
+    notes: [
+      "Dashboard is intended as a lightweight league overview.",
+      "Use enriched_rosters for full roster/player analysis.",
+      "Use enriched matchups for week-specific matchup analysis."
+    ]
+  }
+};
+}
+
+async function getPreseasonRankings(env, leagueId) {
+  const rosterData = await getEnrichedRosters(env, leagueId);
+  const league = rosterData.league;
+  const teams = rosterData.teams || [];
+
+  const rankedTeams = teams
+    .map((team) => {
+      const score = buildPreseasonRankingScore(team, league);
+      const tradeProfile = team.trade_profile || {};
+      const metrics = team.metrics || {};
+
+      return {
+        roster_id: team.roster_id,
+        team_name: team.team_name,
+        manager: team.manager,
+
+        record: team.record,
+        record_display: metrics.record_display || recordString(team.record),
+
+        preseason_score: score.total,
+        preseason_score_components: score.components,
+
+        position_counts: metrics.position_counts || {},
+        availability: metrics.availability || {},
+        empty_slots: metrics.empty_slots || {},
+
+        needs: tradeProfile.needs || [],
+        hard_needs: tradeProfile.hard_needs || [],
+        depth_needs: tradeProfile.depth_needs || [],
+        surplus: tradeProfile.surplus || [],
+
+        active_counts: tradeProfile.active_counts || {},
+        recommended_depth: tradeProfile.recommended_depth || {},
+
+        starters: compactPlayers(team.starters || [], 20),
+
+        bench_summary: {
+          count: (team.bench || []).length,
+          position_counts: metrics.position_counts?.bench || {}
+        },
+
+        reserve_summary: {
+          count: (team.reserve || []).length,
+          position_counts: metrics.position_counts?.reserve || {}
+        },
+
+        taxi_summary: {
+          count: (team.taxi || []).length,
+          position_counts: metrics.position_counts?.taxi || {}
+        },
+
+        ranking_note: score.note
+      };
+    })
+    .sort((a, b) => b.preseason_score - a.preseason_score)
+    .map((team, index) => ({
+      rank: index + 1,
+      ...team
+    }));
+
+  return {
+    league,
+    cache: rosterData.cache,
+    mode: "preseason_rankings",
+    generated_at: new Date().toISOString(),
+    ranking_method:
+      "Preseason roster-construction ranking based on position balance, availability, empty slots, depth flexibility, needs, and surplus. Does not include external projections.",
+    team_count: rankedTeams.length,
+    rankings: rankedTeams,
+    worst_roster: rankedTeams[rankedTeams.length - 1] || null,
+    bottom_three: rankedTeams.slice(-3).reverse(),
+    best_roster: rankedTeams[0] || null
+  };
+}
+
+async function getEnrichedMatchups(env, leagueId, week) {
+  const [rosterData, matchups, playersDb] = await Promise.all([
+    getEnrichedRosters(env, leagueId),
+    sleeperFetch(`/league/${leagueId}/matchups/${week}`),
+    getCachedPlayers(env)
+  ]);
+
+  const teamMap = {};
+  for (const team of rosterData.teams) {
+    teamMap[team.roster_id] = {
+      roster_id: team.roster_id,
+      team_name: team.team_name,
+      manager: team.manager,
+      record: team.record,
+      points_for: team.points_for,
+      points_against: team.points_against
+    };
+  }
+
+  const grouped = {};
+
+  for (const matchup of matchups) {
+    const matchupId = matchup.matchup_id || "unmatched";
+
+    if (!grouped[matchupId]) {
+      grouped[matchupId] = {
+        matchup_id: matchupId,
+        teams: []
+      };
+    }
+
+    const starters = matchup.starters || [];
+    const players = matchup.players || [];
+    const pointsByPlayer = matchup.players_points || {};
+
+    const starterSet = new Set(starters);
+    const bench = players.filter((id) => !starterSet.has(id));
+
+    grouped[matchupId].teams.push({
+      ...teamMap[matchup.roster_id],
+      week_points: matchup.points || 0,
+      starters: starters.map((id) => ({
+        ...mapPlayer(playersDb, id),
+        points: pointsByPlayer[id] || 0
+      })),
+      bench: bench.map((id) => ({
+        ...mapPlayer(playersDb, id),
+        points: pointsByPlayer[id] || 0
+      }))
+    });
+  }
+
+const enrichedMatchups = Object.values(grouped).map((matchup) => {
+  return {
+    ...matchup,
+    matchup_summary: buildMatchupSummary(matchup)
+  };
+});
+
+return {
+  league: rosterData.league,
+  cache: rosterData.cache,
+  week: Number(week),
+  matchup_count: enrichedMatchups.length,
+  matchups: enrichedMatchups
+};
+}
+
+async function getEnrichedTransactions(env, leagueId, week) {
+  const [transactions, users, rosters, playersDb] = await Promise.all([
+    sleeperFetch(`/league/${leagueId}/transactions/${week}`),
+    sleeperFetch(`/league/${leagueId}/users`),
+    sleeperFetch(`/league/${leagueId}/rosters`),
+    getCachedPlayers(env)
+  ]);
+
+  const rosterMap = buildRosterTeamMap(rosters, users);
+  const cache = await getPlayerCacheMeta(env);
+
+  const enrichedTransactions = (transactions || []).map((tx) => {
+    const adds = enrichMovementMap(tx.adds || {}, playersDb, rosterMap, "add");
+    const drops = enrichMovementMap(tx.drops || {}, playersDb, rosterMap, "drop");
+
+    const consenter_teams = (tx.consenter_ids || []).map((rosterId) =>
+      teamLabel(rosterMap, rosterId)
+    );
+
+    const roster_teams = (tx.roster_ids || []).map((rosterId) =>
+      teamLabel(rosterMap, rosterId)
+    );
+
+    return {
+      transaction_id: tx.transaction_id,
+      type: tx.type,
+      status: tx.status,
+      created_at: tx.created ? new Date(tx.created).toISOString() : null,
+      status_updated_at: tx.status_updated
+        ? new Date(tx.status_updated).toISOString()
+        : null,
+      creator_user_id: tx.creator || null,
+      roster_ids: tx.roster_ids || [],
+      roster_teams,
+      consenter_ids: tx.consenter_ids || [],
+      consenter_teams,
+      adds,
+      drops,
+      draft_picks: enrichDraftPicks(tx.draft_picks || [], rosterMap),
+      waiver_budget: enrichWaiverBudget(tx.waiver_budget || [], rosterMap),
+      metadata: tx.metadata || {},
+      raw_summary: {
+        adds_count: adds.length,
+        drops_count: drops.length,
+        draft_picks_count: (tx.draft_picks || []).length,
+        waiver_budget_entries: (tx.waiver_budget || []).length
+      }
+    };
+  });
+
+  return {
+    league_id: leagueId,
+    week: Number(week),
+    cache,
+    transaction_count: enrichedTransactions.length,
+    transactions: enrichedTransactions
+  };
+}
+
+async function getEnrichedTrendingPlayers(
+  env,
+  type,
+  lookbackHours = 24,
+  limit = 25,
+  leagueId = null
+) {
+  const trendType = String(type || "").toLowerCase();
+
+  if (!["add", "drop"].includes(trendType)) {
+    return {
+      error: "Invalid trending type. Use add or drop.",
+      valid_types: ["add", "drop"]
+    };
+  }
+
+  const safeLookbackHours = Math.min(
+    Math.max(Number(lookbackHours) || 24, 1),
+    168
+  );
+
+  const safeLimit = Math.min(
+    Math.max(Number(limit) || 25, 1),
+    100
+  );
+
+  const [trending, playersDb] = await Promise.all([
+    sleeperFetch(
+      `/players/nfl/trending/${trendType}?lookback_hours=${safeLookbackHours}&limit=${safeLimit}`
+    ),
+    getCachedPlayers(env)
+  ]);
+
+  let ownershipMap = null;
+
+  if (leagueId) {
+    const [users, rosters] = await Promise.all([
+      sleeperFetch(`/league/${leagueId}/users`),
+      sleeperFetch(`/league/${leagueId}/rosters`)
+    ]);
+
+    ownershipMap = buildPlayerOwnershipMap(rosters, users);
+  }
+
+  const cache = await getPlayerCacheMeta(env);
+
+  const players = (trending || []).map((item, index) => {
+    const playerId = item.player_id;
+    const player = mapPlayer(playersDb, playerId);
+    const ownership = ownershipMap
+      ? ownershipMap[playerId] || { owned: false }
+      : null;
+
+    return {
+      rank: index + 1,
+      trend_type: trendType,
+      player_id: playerId,
+      player_name: player?.full_name || `Unknown Player (${playerId})`,
+      position: player?.position || null,
+      fantasy_positions: player?.fantasy_positions || [],
+      nfl_team: player?.team || null,
+      injury_status: player?.injury_status || null,
+      status: player?.status || null,
+      active: player?.active ?? null,
+      age: player?.age ?? null,
+      years_exp: player?.years_exp ?? null,
+      trend_count: item.count || 0,
+      ownership
+    };
+  });
+
+  return {
+    trend_type: trendType,
+    sport: "nfl",
+    lookback_hours: safeLookbackHours,
+    limit: safeLimit,
+    league_id: leagueId,
+    cache,
+    count: players.length,
+    players
+  };
+}
+
+async function lookupPlayers(env, idsParam) {
+  const playersDb = await getCachedPlayers(env);
+  const ids = idsParam
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+
+const cache = await getPlayerCacheMeta(env);
+
+return {
+  count: ids.length,
+  cache,
+  players: ids.map((id) => mapPlayer(playersDb, id))
+};
+}
+
+export default {
+  async fetch(request, env) {
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        headers: {
+          "access-control-allow-origin": "*",
+          "access-control-allow-methods": "GET, OPTIONS",
+          "access-control-allow-headers": "content-type"
+        }
+      });
+    }
+
+    try {
+      const url = new URL(request.url);
+      const cleanPath = url.pathname.replace(/\/+$/, "") || "/";
+      const parts = cleanPath.split("/").filter(Boolean);
+
+    if (cleanPath === "/" || cleanPath === "/health") {
+    return json({
+    ok: true,
+    message: "Sleeper proxy is running.",
+    kv_binding_found: !!(env.SLEEPER_CACHE || env["sleeper-league-worker"]),
+   valid_routes: [
+  "/health",
+  "/cache/status",
+  "/cache/refresh?confirm=true",
+  "/league/{league_id}/dashboard",
+  "/league/{league_id}/team/{roster_id}",
+  "/league/{league_id}/trade_partners/{roster_id}",
+  "/league/{league_id}/enriched_rosters",
+  "/league/{league_id}/matchups/{week}/enriched",
+  "/league/{league_id}/transactions/{week}/enriched",
+  "/players/trending/{type}/enriched?lookback_hours=24&limit=25&league_id={league_id}",
+  "/players/lookup?ids=4046,6794"
+]
+  });
+}
+
+// GET /cache/status
+if (parts[0] === "cache" && parts[1] === "status") {
+  return json(await getPlayerCacheMeta(env));
+}
+
+// GET /league/{league_id}/available_players
+if (parts[0] === "league" && parts[2] === "available_players") {
+  const leagueId = parts[1];
+  return json(await getAvailablePlayers(env, leagueId, url));
+}
+
+// GET /cache/refresh?confirm=true
+if (parts[0] === "cache" && parts[1] === "refresh") {
+  const confirm = url.searchParams.get("confirm");
+
+  if (confirm !== "true") {
+    return json(
+      {
+        error: "Refresh not confirmed",
+        message:
+          "To refresh the Sleeper player cache, call /cache/refresh?confirm=true",
+        warning:
+          "This route forces a fresh pull of Sleeper's player database. Protect this route with an API key before sharing the Worker URL."
+      },
+      400
+    );
+  }
+
+  return json(await refreshPlayerCache(env));
+}
+      
+// GET /league/{league_id}/dashboard
+      if (parts[0] === "league" && parts[2] === "dashboard") {
+        const leagueId = parts[1];
+        return json(await getLeagueDashboard(env, leagueId));
+      
+      }
+
+// GET /league/{league_id}/preseason_rankings
+      if (parts[0] === "league" && parts[2] === "preseason_rankings") {
+        const leagueId = parts[1];
+        return json(await getPreseasonRankings(env, leagueId));
+      }
+
+      // GET /league/{league_id}/team/{roster_id}
+      if (parts[0] === "league" && parts[2] === "team" && parts[3]) {
+        const leagueId = parts[1];
+        const rosterId = parts[3];
+
+  return json(await getEnrichedTeam(env, leagueId, rosterId));
+}
+
+// GET /league/{league_id}/trade_partners/{roster_id}
+if (parts[0] === "league" && parts[2] === "trade_partners" && parts[3]) {
+  const leagueId = parts[1];
+  const rosterId = parts[3];
+
+  return json(await getTradePartners(env, leagueId, rosterId));
+}
+// GET /league/{league_id}/enriched_rosters
+      
+      if (parts[0] === "league" && parts[2] === "enriched_rosters") {
+        const leagueId = parts[1];
+        return json(await getEnrichedRosters(env, leagueId));
+      }
+
+      // GET /league/{league_id}/matchups/{week}/enriched
+      if (
+        parts[0] === "league" &&
+        parts[2] === "matchups" &&
+        parts[4] === "enriched"
+      ) {
+        const leagueId = parts[1];
+        const week = parts[3];
+        return json(await getEnrichedMatchups(env, leagueId, week));
+      }
+
+      // GET /league/{league_id}/transactions/{week}/enriched
+      if (
+        parts[0] === "league" &&
+        parts[2] === "transactions" &&
+        parts[4] === "enriched"
+      ) {
+        const leagueId = parts[1];
+        const week = parts[3];
+        return json(await getEnrichedTransactions(env, leagueId, week));
+}
+      
+// GET /players/trending/{type}/enriched?lookback_hours=24&limit=25&league_id=123
+if (
+  parts[0] === "players" &&
+  parts[1] === "trending" &&
+  parts[3] === "enriched"
+) {
+  const type = parts[2];
+
+  const lookbackHoursParam = url.searchParams.get("lookback_hours");
+  const limitParam = url.searchParams.get("limit");
+  const leagueId = url.searchParams.get("league_id");
+
+  const lookbackHours = lookbackHoursParam ? Number(lookbackHoursParam) : 24;
+  const limit = limitParam ? Number(limitParam) : 25;
+
+  return json(
+    await getEnrichedTrendingPlayers(
+      env,
+      type,
+      lookbackHours,
+      limit,
+      leagueId
+    )
+  );
+}
+
+
+// GET /players/lookup?ids=4046,6794,6786      
+      if (parts[0] === "players" && parts[1] === "lookup") {
+        const ids = url.searchParams.get("ids");
+        if (!ids) {
+          return json({ error: "Missing ids query parameter" }, 400);
+        }
+
+        return json(await lookupPlayers(env, ids));
+      }
+
+      return json(
+  {
+    error: "Not found",
+    received_path: url.pathname,
+    clean_path: cleanPath,
+    parts: parts,
+valid_routes: [
+  "/health",
+  "/cache/status",
+  "/cache/refresh?confirm=true",
+  "/league/{league_id}/dashboard",
+  "/league/{league_id}/team/{roster_id}",
+  "/league/{league_id}/trade_partners/{roster_id}",
+  "/league/{league_id}/enriched_rosters",
+  "/league/{league_id}/matchups/{week}/enriched",
+  "/league/{league_id}/transactions/{week}/enriched",
+  "/players/trending/{type}/enriched?lookback_hours=24&limit=25&league_id={league_id}",
+  "/players/lookup?ids=4046,6794"
+]
+  },
+  404
+);
+    } catch (err) {
+      return json(
+        {
+          error: "Proxy error",
+          message: err.message
+        },
+        500
+      );
+    }
+  }
+};
