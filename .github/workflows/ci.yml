@@ -1,0 +1,16 @@
+name: Worker regression checks
+on:
+  pull_request:
+  push:
+    branches: [main, 'phase2/**']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.16.0'
+      - run: npm run check

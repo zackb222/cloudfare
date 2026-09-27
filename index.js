@@ -1978,6 +1978,40 @@ return {
 };
 }
 
+async function getTradedDraftPicks(leagueId) {
+  const [picks, users, rosters] = await Promise.all([
+    sleeperFetch(`/league/${leagueId}/traded_picks`),
+    sleeperFetch(`/league/${leagueId}/users`),
+    sleeperFetch(`/league/${leagueId}/rosters`),
+  ]);
+  if (!Array.isArray(picks) || !Array.isArray(users) || !Array.isArray(rosters)) {
+    throw new Error('Invalid upstream traded-pick data');
+  }
+  const identities = new Set();
+  for (const pick of picks) {
+    if (!pick || typeof pick.season !== 'string' || !/^\d{4}$/.test(pick.season) ||
+        !['round', 'roster_id', 'previous_owner_id', 'owner_id'].every(key => Number.isInteger(pick[key]) && pick[key] > 0)) {
+      throw new Error('Invalid upstream traded-pick record');
+    }
+    const identity = `${pick.season}:${pick.round}:${pick.roster_id}`;
+    if (identities.has(identity)) throw new Error('Duplicate upstream traded-pick identity');
+    identities.add(identity);
+  }
+  const rosterMap = buildRosterTeamMap(rosters, users);
+  const normalized = picks.map(({ season, round, roster_id, previous_owner_id, owner_id }) =>
+    ({ season, round, roster_id, previous_owner_id, owner_id }));
+  return {
+    schema_version: '1',
+    league_id: leagueId,
+    as_of: new Date().toISOString(),
+    scope: 'traded_picks_only',
+    inventory_complete: false,
+    count: normalized.length,
+    picks: enrichDraftPicks(normalized, rosterMap),
+    warnings: ['Untraded picks are excluded. Draft slots, remaining-pick status and asset values are not determined.'],
+  };
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -1994,6 +2028,13 @@ export default {
       const url = new URL(request.url);
       const cleanPath = url.pathname.replace(/\/+$/, "") || "/";
       const parts = cleanPath.split("/").filter(Boolean);
+// Add immediately after URL/parts parsing in the existing fetch handler.
+if (request.method === 'GET' && parts.length === 4 &&
+    parts[0] === 'league' && /^\d+$/.test(parts[1]) &&
+    parts[2] === 'traded_picks' && parts[3] === 'enriched') {
+  return json(await getTradedDraftPicks(parts[1]));
+}
+
 
     if (cleanPath === "/" || cleanPath === "/health") {
     return json({
